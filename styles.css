@@ -1,0 +1,8 @@
+pre code {
+  background-color: #f2f2f2 !important;
+}
+pre {
+  background-color: #f2f2f2 !important;
+  border-radius: 6px;
+  padding: 10px;
+}
