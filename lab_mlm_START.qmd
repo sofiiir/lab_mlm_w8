@@ -74,11 +74,12 @@ library(patchwork)    # combine plots
 
 ```{r}
 
-nitrate_df <- 
+nitrate_df <- read_csv(here::here("data", "nitrate_mlm_sim.csv"))
 
 ```
 
 ### Variable descriptions
+Level 1 versus level 2 variables.
 
 ```{r, echo=FALSE}
 variable_descriptions <- tribble(
@@ -89,7 +90,7 @@ variable_descriptions <- tribble(
   "rain_7day_mm", "7-day cumulative rainfall (mm).",
   "rain_cgm", "Grand-mean centered rainfall (mix of within + between).",
   "rain_cwc", "Site-mean centered rainfall anomaly (within-site).",
-  "rain_mean_site_cgm", "Site mean rainfall (grand-mean centered).",
+  "rain_mean_site_cgm", "Site mean rainfall (grand-mean centered)(between level).",
   "landuse_ag_cgm (Level-2)", "Agriculture intensity (grand-mean centered).",
   "temp_cwc (Level-1)", "Temperature anomaly within site (site-mean centered)."
 )
@@ -118,7 +119,7 @@ ggplot(nitrate_df, aes(date, log_nitrate, group = site_id)) +
 
 **Q1.** Based on this plot, why is it misleading to treat all rows as independent in a single-level regression?
 
-**Response:** _______________________________
+**Response:** `log(nitrate)`'s grand mean is centered around the mean for all of the sites, in this case is zero. The grand mean line suggests that there is no variation within a site's nitrate levels. However, each site fluctuates throughout time. The grand mean hides the true trends of nitrate at each site. A site that follows the grand mean does not exist in reality. 
 
 ------------------------------------------------------------------------
 
@@ -133,10 +134,11 @@ ggplot(nitrate_df, aes(date, log_nitrate, group = site_id)) +
 ### MODEL 0: single-level empty (ignores clustering)
 ```{r}
 
-m0_lm <- 
+m0_lm <- lm(log_nitrate ~ 1, data = nitrate_df)
 
 summ(m0_lm, digits = 3, model.fit = FALSE)
 ```
+This produces the grand mean for the entire sample. In this case the average log nitrate level for the full sample is 0.212.
 
 ### Model 1: Empty random intercept model
 
@@ -147,10 +149,13 @@ summ(m0_lm, digits = 3, model.fit = FALSE)
 
 ```{r}
 
-m1_empty <- 
+m1_empty <- lmer(log_nitrate ~ 1 + (1 | site_id), # create random intercept by site which separates between site variance
+                 data = nitrate_df,
+                 REML = TRUE)
 
 summ(m1_empty, digits = 3, model.fit = FALSE)
 ```
+Inter-class correlation coefficient (ICC): how much of the variance in the outcome is between level variance. This implies that the variance from within levels is just over sixty percent. 
 
 ### Calculate ICC (portion of between-level variance):
 
@@ -174,23 +179,24 @@ Creating variance component predictors:
 
 ```{r}
 # grand mean of rain across *all* observations
-grand_mean_rain <- 
+grand_mean_rain <- mean(nitrate_df$rain_7day_mm)
 
-centered_vars <- nitrate_df %>%
-  group_by() %>%
+centered_vars <- nitrate_df |> 
+  group_by(site_id) |> 
   mutate(
     # site mean rain
-    
+    rain_mean_site = mean(rain_7day_mm),
 
     # 1) Grand-mean centered rain (CGM): mixes within + between variation
-    
+    rain_cgm = rain_7day_mm - grand_mean_rain, 
 
     # 2) Centered-within-site (CWC): “rain anomaly” vs that site’s typical rain
-    
+    rain_cwc = rain_7day_mm - rain_mean_site,
 
     # 3) Site mean rain, grand-mean centered: between-site component
+    rain_mean_site_cgm = rain_mean_site - grand_mean_rain
     
-  ) %>%
+  ) |> 
   ungroup()
 ```
 
@@ -211,10 +217,11 @@ ggplot(re_int, aes(u0_hat)) +
     x = "Estimated site deviation from the grand mean",
     y = "Number of sites") + theme_minimal()
 ```
+The MLM assumes normal distribution.
 
 **Q2.** What does a *larger* ICC mean here? How does it change (a) effective sample size and (b) how important it is to model site differences?
 
-**Response:** _______________________________
+**Response:** The ICC shOWS how much of the variance in the outcome is coming from between level variance. Having a larger ICC shows that there is more between level variance than within level variance. When the ICC is higher the sample size is also smaller as there are fewer separate data points. Modelling site differences is essential to effectively running an MLM. 
 
 ------------------------------------------------------------------------
 
@@ -223,7 +230,11 @@ ggplot(re_int, aes(u0_hat)) +
 This model uses `rain_cgm`, which mixes within + between information into one slope.
 
 ```{r}
-m2_smushed <- 
+m2_smushed <- lmer(log_nitrate ~ rain_cgm + (1|site_id),
+                   data = nitrate_df,
+                   REML = TRUE
+  
+)
 
 summ(m2_smushed, digits = 3, model.fit = FALSE)
 ```
@@ -271,7 +282,7 @@ p_between <- ggplot(site_means, aes(mean_rain, mean_log_nitrate)) +
 
 **Q3.** In one or two sentences: what does it mean that the smushed effect is a “blend”? Use the three-panel figure to support your explanation.
 
-**Response:** _______________________________
+**Response:** The smushed effect is misleading as it is averaging the positively sloped within effect variance and the negatively sloped between level variance. This implies that there is little to no variance at each site and across sites which is a false statement. 
 
 ------------------------------------------------------------------------
 
@@ -282,7 +293,9 @@ This targets the within-site question:
 > “When rainfall is higher than usual for the same site, does nitrate change?”
 
 ```{r}
-m3_within <- 
+m3_within <- lmer(log_nitrate ~ rain_cwc + (1 | site_id),
+                  data = nitrate_df, 
+                  REML = TRUE)
 
 summ(m3_within, digits = 3, model.fit = FALSE)
 ```
@@ -304,7 +317,7 @@ ggplot(within_df, aes(rain_cwc, log_nitrate_cwc)) +
 
 **Q4.** Interpret the within-site coefficient in plain English (direction + unit). 
 
-**Response:** _______________________________
+**Response:** An increase in rain on average increases nitrate. 
 
 ------------------------------------------------------------------------
 
@@ -315,7 +328,9 @@ This targets the between-site question:
 > “Do wetter sites (on average) have different average nitrate?”
 
 ```{r}
-m4_between <- 
+m4_between <- lmer(log_nitrate ~ rain_mean_site_cgm + (1 | site_id),
+                  data = nitrate_df, 
+                  REML = TRUE)
 
 summ(m4_between, digits = 3, model.fit = FALSE)
 ```
@@ -336,7 +351,7 @@ ggplot(site_means, aes(mean_rain, mean_log_nitrate)) +
 
 **Q5.** Why might the between-site relationship differ from the within-site relationship? Give one plausible environmental mechanism or confounder.
 
-**Response:** _______________________________
+**Response:** Sites in areas where there is agricultural runoff would likely have an increase in nitrate when it rains. Other areas would not have this increase in nitrate if their environment is different. 
 
 ------------------------------------------------------------------------
 
@@ -345,7 +360,9 @@ ggplot(site_means, aes(mean_rain, mean_log_nitrate)) +
 This specification provides separate within- and between-level rain effects.
 
 ```{r}
-m5_within_between <- 
+m5_within_between <- lmer(log_nitrate ~ rain_cwc + rain_mean_site_cgm + (1 | site_id),
+                  data = nitrate_df, 
+                  REML = TRUE)
 
 summ(m5_within_between, digits = 3, model.fit = FALSE)
 ```
@@ -364,7 +381,7 @@ p1 | p2
 
 **Q6.** Write a sentence that communicates both the within and between findings.
 
-**Response:** _______________________________
+**Response:** At individual sites, as rain increases on average, there is an increase in nitrate levels. Between sites, as rain increases on average, there is a decrease in nitrate levels.
 
 ------------------------------------------------------------------------
 
@@ -373,37 +390,42 @@ p1 | p2
 Now we allow the within-site rain effect to vary by site:
 
 ```{r}
-m7_rand_slope <-
+m7_rand_slope <- lmer(log_nitrate ~ 
+                        rain_cwc + rain_mean_site_cgm + temp_cwc + landuse_ag_cgm +
+                      (1 + rain_cwc | site_id), # allows both the intercepts and slopes to vary
+                  data = nitrate_df, 
+                  REML = TRUE)
 
 summ(m7_rand_slope , digits = 3, model.fit = FALSE)
 ```
-
+ More variance is being captured at the random intercepts and less variance being captured at the random slopes. 
+ 
 ### Plot: Site-specific fitted slopes 
 
 ```{r}
-some_sites <- nitrate_df |> distinct(site_id) |> slice_head(n = 12) |> pull(site_id)
-
-grid_df <- nitrate_df |>
-  filter(site_id %in% some_sites) |>
-  group_by(site_id) |>
-  summarise(
-    rain_cwc = seq(min(rain_cwc), max(rain_cwc), length.out = 30),
-    rain_mean_site_cgm = first(rain_mean_site_cgm),
-    temp_cwc = 0,
-    landuse_ag_cgm = first(landuse_ag_cgm),
-    .groups = "drop"
-  )
-
-grid_df$pred <- predict(m7_rand_slope, newdata = grid_df, re.form = NULL)
-
-ggplot(grid_df, aes(rain_cwc, pred, group = site_id)) +
-  geom_line(alpha = 0.85) +
-  labs(
-    title = "Random slopes: rainfall effect varies by site",
-    subtitle = "Each line is the predicted within-site relationship for one site (temp_cwc fixed at 0)",
-    x = "Rain anomaly within site (mm)",
-    y = "Predicted log(nitrate)"
-  )
+# some_sites <- nitrate_df |> distinct(site_id) |> slice_head(n = 12) |> pull(site_id)
+# 
+# grid_df <- nitrate_df |>
+#   filter(site_id %in% some_sites) |>
+#   group_by(site_id) |>
+#   summarise(
+#     rain_cwc = seq(min(rain_cwc), max(rain_cwc), length.out = 30),
+#     rain_mean_site_cgm = first(rain_mean_site_cgm),
+#     temp_cwc = 0,
+#     landuse_ag_cgm = first(landuse_ag_cgm),
+#     .groups = "drop"
+#   )
+# 
+# grid_df$pred <- predict(m7_rand_slope, newdata = grid_df, re.form = NULL)
+# 
+# ggplot(grid_df, aes(rain_cwc, pred, group = site_id)) +
+#   geom_line(alpha = 0.85) +
+#   labs(
+#     title = "Random slopes: rainfall effect varies by site",
+#     subtitle = "Each line is the predicted within-site relationship for one site (temp_cwc fixed at 0)",
+#     x = "Rain anomaly within site (mm)",
+#     y = "Predicted log(nitrate)"
+#   )
 ```
 
 
@@ -418,7 +440,11 @@ ggplot(grid_df, aes(rain_cwc, pred, group = site_id)) +
 We now test whether slope heterogeneity is systematically related to agriculture:
 
 ```{r}
-m8_cross_level <- 
+m8_cross_level <- lmer(log_nitrate ~ 
+                        rain_cwc*landuse_ag_cgm + rain_mean_site_cgm + temp_cwc +  +
+                      (1 + rain_cwc | site_id),
+                  data = nitrate_df, 
+                  REML = TRUE)
 
 summ(m8_cross_level, digits = 3, model.fit = FALSE)
 ```
